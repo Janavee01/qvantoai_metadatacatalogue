@@ -1,0 +1,187 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Interactive Lineage</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    #chart { width: 100vw; height: 90vh; }
+    .node circle { stroke: #333; stroke-width: 1.5px; }
+    .node text { pointer-events: none; font-size: 12px; }
+    .tooltip {
+      position: absolute;
+      padding: 6px 10px;
+      background: rgba(0,0,0,0.75);
+      color: white;
+      border-radius: 4px;
+      font-size: 12px;
+      pointer-events: none;
+      display:none;
+    }
+  </style>
+</head>
+<body>
+  <h2 style="margin:8px 12px">Interactive Data Lineage</h2>
+  <div id="chart"></div>
+  <div class="tooltip" id="tooltip"></div>
+
+  <!-- D3 v7 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+  async function buildGraph() {
+    const res = await fetch('/assets');
+    const assets = await res.json();
+
+    // Build nodes keyed by name+type (same as backend)
+    const nodesMap = new Map();
+    assets.forEach(a => {
+      const key = a.name + '_' + a.type;
+      if (!nodesMap.has(key)) {
+        nodesMap.set(key, {
+          id: key,
+          name: a.name,
+          type: a.type,
+          tags: a.tags,
+          description: a.description
+        });
+      }
+    });
+
+    // Build edges by linked_to field (if present)
+    const links = [];
+    assets.forEach(a => {
+      if (a.linked_to) {
+        // find target node key by name matching
+        // we assume linked_to contains the name (not full key)
+        // try match to any node whose name === linked_to
+        for (const [k, node] of nodesMap.entries()) {
+          if (node.name === a.linked_to) {
+            const sourceKey = node.id;
+            const destKey = a.name + '_' + a.type;
+            // only add if both exist
+            if (nodesMap.has(destKey)) {
+              links.push({ source: sourceKey, target: destKey });
+            }
+            break;
+          }
+        }
+      }
+    });
+
+    // Convert Map to array
+    const nodes = Array.from(nodesMap.values());
+
+    // Remove isolated nodes optionally (comment out if you want all)
+    const nodeHasEdge = new Set();
+    links.forEach(l => { nodeHasEdge.add(l.source); nodeHasEdge.add(l.target) });
+    const filteredNodes = nodes.filter(n => nodeHasEdge.has(n.id));
+
+    // Prepare svg
+    const width = document.documentElement.clientWidth;
+    const height = window.innerHeight * 0.8;
+    d3.select('#chart').selectAll('*').remove();
+    const svg = d3.select('#chart').append('svg')
+      .attr('width', width)
+      .attr('height', height);
+
+    // color scale
+    const color = d => {
+      if (d.type && d.type.includes('Policy')) return '#90ee90';
+      if (d.type && d.type.includes('Claim')) return '#87CEEB';
+      if (d.type && d.type.includes('ReserveModel')) return '#F08080';
+      return '#d3d3d3';
+    };
+
+    // build simulation using filtered nodes but keep links that reference them
+    const nodesById = new Map(filteredNodes.map(n => [n.id, n]));
+    const filteredLinks = links.filter(l => nodesById.has(l.source) && nodesById.has(l.target));
+
+    const simulation = d3.forceSimulation(Array.from(nodesById.values()))
+      .force('link', d3.forceLink(filteredLinks).id(d => d.id).distance(120).strength(1))
+      .force('charge', d3.forceManyBody().strength(-700))
+      .force('center', d3.forceCenter(width / 2, height / 2))
+      .force('collide', d3.forceCollide(60));
+
+    // draw links
+    const link = svg.append('g')
+      .attr('stroke', '#999')
+      .attr('stroke-opacity', 0.8)
+      .selectAll('line')
+      .data(filteredLinks)
+      .join('line')
+      .attr('stroke-width', 2)
+      .attr('marker-end', 'url(#arrow)');
+
+    // arrow marker
+    svg.append('defs').append('marker')
+      .attr('id', 'arrow')
+      .attr('viewBox', '0 -5 10 10')
+      .attr('refX', 22)
+      .attr('refY', 0)
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
+      .attr('orient', 'auto')
+      .append('path')
+      .attr('d', 'M0,-5L10,0L0,5')
+      .attr('fill', '#999');
+
+    // draw nodes
+    const node = svg.append('g')
+      .selectAll('g')
+      .data(Array.from(nodesById.values()))
+      .join('g')
+      .call(drag(simulation));
+
+    node.append('circle')
+      .attr('r', 28)
+      .attr('fill', d => color(d))
+      .attr('stroke', '#333');
+
+    node.append('text')
+      .attr('dy', 4)
+      .attr('text-anchor', 'middle')
+      .text(d => d.name)
+      .style('font-size', '11px');
+
+    // tooltip
+    const tooltip = d3.select('#tooltip');
+
+    node.on('mouseover', (event, d) => {
+      tooltip.style('display', 'block')
+             .html(`<strong>${d.name}</strong><br/>Type: ${d.type}<br/>Tags: ${d.tags || ''}`)
+             .style('left', (event.pageX + 10) + 'px')
+             .style('top', (event.pageY + 10) + 'px');
+    }).on('mouseout', () => tooltip.style('display', 'none'));
+
+    simulation.on('tick', () => {
+      link
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
+
+      node.attr('transform', d => `translate(${d.x},${d.y})`);
+    });
+
+    // drag handlers
+    function drag(sim) {
+      function dragstarted(event, d) {
+        if (!event.active) sim.alphaTarget(0.3).restart();
+        d.fx = d.x; d.fy = d.y;
+      }
+      function dragged(event, d) { d.fx = event.x; d.fy = event.y; }
+      function dragended(event, d) {
+        if (!event.active) sim.alphaTarget(0);
+        d.fx = null; d.fy = null;
+      }
+      return d3.drag().on('start', dragstarted).on('drag', dragged).on('end', dragended);
+    }
+  }
+
+  buildGraph().catch(e => {
+    console.error(e);
+    document.getElementById('chart').innerText = 'Failed to load lineage: ' + e;
+  });
+  </script>
+</body>
+</html>
