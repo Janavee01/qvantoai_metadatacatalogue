@@ -1,4 +1,4 @@
-"""
+
 qvantoai_metadatacatalogue - Metadata Catalog, Lineage, and Claims Fraud Workflow
 
 ------------------------------------------
@@ -85,7 +85,7 @@ Shows total claims, suspicious claims, fraud rate, and total metadata assets.
 http://127.0.0.1:5000/dashboard
 
 
-Lineage Graph (PNG image)
+Lineage Graph 
 Displays the policy → claim → reserve model lineage as a static image.
 
 http://127.0.0.1:5000/lineage
